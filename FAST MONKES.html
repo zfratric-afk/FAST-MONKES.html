@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>FAST MONKES</title>
+<style>
+body{margin:0;overflow:hidden;background:black;}
+#info{
+  position:absolute;
+  top:10px;
+  left:10px;
+  color:white;
+  font-family:Arial;
+}
+</style>
+</head>
+
+<body>
+
+<div id="info">
+W / S = Move | A / D or ⬅️ ➡️ = Turn | 1 = First person | 2 = Third person | R = Unstuck<br>
+<strong>TAG THE WATER GORILLA!</strong> (get close)<br>
+Tags: <span id="score">0</span>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+<script>
+
+// Scene and camera
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb); // sky color
+
+const camera = new THREE.PerspectiveCamera(
+  75,
+  window.innerWidth/window.innerHeight,
+  0.1,
+  1000
+);
+
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth,window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Player object
+const player = new THREE.Object3D();
+scene.add(player);
+camera.position.y = 1.6;
+player.add(camera);
+
+// Fire Gorilla arms (visible in first-person, attached to camera)
+const armMaterial = new THREE.MeshStandardMaterial({color: 0xff6600, emissive: 0xff3300});
+const handMaterial = new THREE.MeshStandardMaterial({color: 0xffaa00, emissive: 0xff4400});
+
+const armBaseY = -0.4;
+const armBaseZ = -0.6;
+
+function createGorillaArm(isLeft){
+  const armGroup = new THREE.Group();
+  const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.15,0.9,8), armMaterial);
+  const lower = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.12,0.85,8), armMaterial);
+  const hand = new THREE.Mesh(new THREE.SphereGeometry(0.15,8,6), handMaterial);
+  upper.rotation.x = Math.PI/2;
+  upper.position.z = -0.45;
+  lower.rotation.x = Math.PI/2;
+  lower.position.z = -0.9;
+  hand.position.z = -1.35;
+  armGroup.add(upper);
+  armGroup.add(lower);
+  armGroup.add(hand);
+  armGroup.position.set(isLeft ? -0.4 : 0.4, armBaseY, armBaseZ);
+  armGroup.rotation.x = 0.2;
+  if(isLeft) armGroup.rotation.y = 0.15;
+  else armGroup.rotation.y = -0.15;
+  return armGroup;
+}
+
+const leftArm = createGorillaArm(true);
+const rightArm = createGorillaArm(false);
+camera.add(leftArm);
+camera.add(rightArm);
+
+// Full gorilla body (visible in third person)
+function createGorillaBody(){
+  const body = new THREE.Group();
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.6,1.2,8), armMaterial);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.4,8,6), armMaterial);
+  const leftArmB = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,0.9,6), armMaterial);
+  const rightArmB = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,0.9,6), armMaterial);
+  const leftLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.25,0.2,0.6,6), armMaterial);
+  const rightLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.25,0.2,0.6,6), armMaterial);
+  torso.position.y = 0.6;
+  head.position.y = 1.4;
+  leftArmB.rotation.z = Math.PI/3;
+  leftArmB.position.set(-0.5, 0.95, 0.35);
+  rightArmB.rotation.z = -Math.PI/3;
+  rightArmB.position.set(0.5, 0.95, 0.35);
+  leftLeg.position.set(-0.3, 0.3, 0.15);
+  rightLeg.position.set(0.3, 0.3, 0.15);
+  body.add(torso);
+  body.add(head);
+  body.add(leftArmB);
+  body.add(rightArmB);
+  body.add(leftLeg);
+  body.add(rightLeg);
+  return body;
+}
+
+const gorillaBody = createGorillaBody();
+gorillaBody.visible = false;
+player.add(gorillaBody);
+
+let walkCycle = 0;
+
+const PLAYER_RADIUS = 0.5;
+const obstacles = [];
+
+// Textures
+const textureLoader = new THREE.TextureLoader();
+const groundTexture = textureLoader.load('https://threejs.org/examples/textures/grasslight-big.jpg');
+groundTexture.wrapS = groundTexture.wrapT = THREE.RepeatWrapping;
+groundTexture.repeat.set(25,25);
+
+// Procedural rock texture (works offline)
+const rockCanvas = document.createElement('canvas');
+rockCanvas.width = 256;
+rockCanvas.height = 256;
+const rockCtx = rockCanvas.getContext('2d');
+const rockGrad = rockCtx.createLinearGradient(0,0,256,256);
+rockGrad.addColorStop(0,'#4a4a4a');
+rockGrad.addColorStop(0.5,'#6b6b6b');
+rockGrad.addColorStop(1,'#3d3d3d');
+rockCtx.fillStyle = rockGrad;
+rockCtx.fillRect(0,0,256,256);
+for(let i=0;i<800;i++){
+  rockCtx.fillStyle = 'rgba('+(70+Math.random()*40)+','+(70+Math.random()*40)+','+(65+Math.random()*35)+','+(0.3+Math.random()*0.4)+')';
+  rockCtx.fillRect(Math.random()*256,Math.random()*256,2+Math.random()*6,2+Math.random()*6);
+}
+const rockTexture = new THREE.CanvasTexture(rockCanvas);
+const mountainTexture = textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg');
+const barkTexture = textureLoader.load('https://threejs.org/examples/textures/crate.gif'); // wood texture
+
+// Lights (needed for textured materials)
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+dirLight.position.set(50, 100, 50);
+scene.add(dirLight);
+
+// Ground (solid green - texture can fail when opening file locally)
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(200,200),
+  new THREE.MeshStandardMaterial({color: 0x3cb043})
+);
+ground.rotation.x = -Math.PI/2;
+scene.add(ground);
+
+const SPAWN_CLEAR = 15; // nothing spawns this close to (0,0)
+function isClearOfSpawn(x,z){
+  return Math.sqrt(x*x + z*z) > SPAWN_CLEAR;
+}
+
+// Mountains
+for(let i=0;i<25;i++){
+  let mx, mz;
+  do { mx = (Math.random()-0.5)*150; mz = (Math.random()-0.5)*150; } while(!isClearOfSpawn(mx,mz));
+  const hill = new THREE.Mesh(
+    new THREE.ConeGeometry(5 + Math.random()*8, 6 + Math.random()*10, 8),
+    new THREE.MeshStandardMaterial({map: mountainTexture})
+  );
+  hill.position.set(mx, 3, mz);
+  scene.add(hill);
+  obstacles.push({mesh:hill, radius:5 + Math.random()*4});
+}
+
+// Trees
+for(let i=0;i<40;i++){
+  let tx, tz;
+  do { tx = (Math.random()-0.5)*160; tz = (Math.random()-0.5)*160; } while(!isClearOfSpawn(tx,tz));
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.3,0.3,3),
+    new THREE.MeshStandardMaterial({map: barkTexture})
+  );
+  const leaves = new THREE.Mesh(
+    new THREE.SphereGeometry(1.5),
+    new THREE.MeshStandardMaterial({color: 0x228B22}) // forest green
+  );
+  trunk.position.set(tx, 1.5, tz);
+  leaves.position.set(tx, 3.5, tz);
+  scene.add(trunk);
+  scene.add(leaves);
+  obstacles.push({mesh:trunk, radius:0.5});
+  obstacles.push({mesh:leaves, radius:1.5});
+}
+
+// Cave
+const cave = new THREE.Mesh(
+  new THREE.CylinderGeometry(4,4,20,20,1,true),
+  new THREE.MeshStandardMaterial({map: rockTexture, side:THREE.DoubleSide})
+);
+cave.rotation.z = Math.PI/2;
+cave.position.set(0,2,40);
+scene.add(cave);
+obstacles.push({mesh:cave, radius:4});
+
+// Rocks forming border (stacked)
+const BORDER = 90;
+
+function createRockStack(x, y, z){
+  const stackHeight = 3 + Math.floor(Math.random()*3); // 3 to 5 rocks per stack
+  for(let j=0; j<stackHeight; j++){
+    const rock = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(2 + Math.random()*2),
+      new THREE.MeshStandardMaterial({map: rockTexture})
+    );
+    const scaleY = 1 + Math.random()*2;
+    rock.scale.set(1, scaleY, 1);
+    const rockY = (scaleY / 2) + j*2.5;
+    rock.position.set(x, rockY, z);
+    rock.rotation.y = Math.random()*Math.PI;
+    scene.add(rock);
+    obstacles.push({mesh:rock, radius:2});
+  }
+}
+
+for(let i=-BORDER;i<=BORDER;i+=6){
+  createRockStack(i,0,-BORDER); // north
+  createRockStack(i,0,BORDER);  // south
+  createRockStack(-BORDER,0,i); // west
+  createRockStack(BORDER,0,i);  // east
+}
+
+// Water Gorilla (target to tag)
+const waterGorillaMat = new THREE.MeshStandardMaterial({color: 0x00aaff});
+const stoneGorillaMat = new THREE.MeshStandardMaterial({color: 0x5a5a5a});
+function createWaterGorilla(){
+  const gorilla = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.6,1.2,8), waterGorillaMat);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.4,8,6), waterGorillaMat);
+  const leftArm = new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.15,0.8,6), waterGorillaMat);
+  const rightArm = new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.15,0.8,6), waterGorillaMat);
+  body.position.y = 0.6;
+  head.position.y = 1.4;
+  leftArm.rotation.z = Math.PI/3;
+  leftArm.position.set(-0.5, 1, 0.3);
+  rightArm.rotation.z = -Math.PI/3;
+  rightArm.position.set(0.5, 1, 0.3);
+  gorilla.add(body);
+  gorilla.add(head);
+  gorilla.add(leftArm);
+  gorilla.add(rightArm);
+  return gorilla;
+}
+
+const waterGorilla = createWaterGorilla();
+waterGorilla.position.set(20, 0, 20);
+scene.add(waterGorilla);
+
+const TAG_RADIUS = 2.5;
+const WATER_GORILLA_SPEED = 0.12;
+const STONE_DURATION = 180; // ~3 seconds
+let waterGorillaTimer = 0;
+let waterGorillaStoned = false;
+let waterGorillaStonedTimer = 0;
+let tagCount = 0;
+
+function setWaterGorillaMaterial(mat){
+  waterGorilla.traverse(c => { if(c.isMesh) c.material = mat; });
+}
+
+function getRandomSpawn(){
+  return {
+    x: (Math.random()-0.5)*140,
+    z: (Math.random()-0.5)*140
+  };
+}
+
+// Controls
+let keys = {};
+let cameraMode = 1; // 1 = first person, 2 = third person
+document.addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if(e.key === "1") cameraMode = 1;
+  if(e.key === "2") cameraMode = 2;
+  if(e.key === "r" || e.key === "R"){
+    player.position.x = 0;
+    player.position.z = 0;
+  }
+});
+document.addEventListener("keyup", e => keys[e.key] = false);
+
+const WORLD_LIMIT = BORDER-2;
+
+function checkCollision(newX, newZ){
+  for(let obj of obstacles){
+    const dx = newX - obj.mesh.position.x;
+    const dz = newZ - obj.mesh.position.z;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+    if(dist < obj.radius + PLAYER_RADIUS) return true;
+  }
+  return false;
+}
+
+function update(){
+  let moveX = 0;
+  let moveZ = 0;
+  const speed = 0.25;
+
+  if(keys["ArrowLeft"] || keys["a"] || keys["A"]) player.rotation.y += 0.05;
+  if(keys["ArrowRight"] || keys["d"] || keys["D"]) player.rotation.y -= 0.05;
+  if(keys["w"] || keys["W"]){
+    moveZ = -speed * Math.cos(player.rotation.y);
+    moveX = -speed * Math.sin(player.rotation.y);
+  }
+  if(keys["s"] || keys["S"]){
+    moveZ = speed * Math.cos(player.rotation.y);
+    moveX = speed * Math.sin(player.rotation.y);
+  }
+
+  let newX = player.position.x + moveX;
+  let newZ = player.position.z + moveZ;
+
+  if(newX > WORLD_LIMIT) newX = WORLD_LIMIT;
+  if(newX < -WORLD_LIMIT) newX = -WORLD_LIMIT;
+  if(newZ > WORLD_LIMIT) newZ = WORLD_LIMIT;
+  if(newZ < -WORLD_LIMIT) newZ = -WORLD_LIMIT;
+
+  if(!checkCollision(newX, newZ)){
+    player.position.x = newX;
+    player.position.z = newZ;
+  }
+
+  // Camera first/third person
+  if(cameraMode === 1){
+    camera.position.set(0, 1.6, 0);
+    gorillaBody.visible = false;
+    leftArm.visible = true;
+    rightArm.visible = true;
+  } else {
+    camera.position.set(0, 3, 8);
+    camera.lookAt(player.position.x, player.position.y + 1.2, player.position.z);
+    gorillaBody.visible = true;
+    leftArm.visible = false;
+    rightArm.visible = false;
+  }
+
+  // Arm bounce when walking
+  const isWalking = (keys["w"] || keys["W"] || keys["s"] || keys["S"]) && (moveX !== 0 || moveZ !== 0);
+  if(isWalking) walkCycle += 0.25;
+  const bounce = isWalking ? Math.sin(walkCycle) * 0.08 : 0;
+  leftArm.position.y = armBaseY + bounce;
+  rightArm.position.y = armBaseY - bounce;
+
+  // Tag check
+  const dx = player.position.x - waterGorilla.position.x;
+  const dz = player.position.z - waterGorilla.position.z;
+  const dist = Math.sqrt(dx*dx + dz*dz);
+  if(dist < TAG_RADIUS && !waterGorillaStoned){
+    waterGorillaStoned = true;
+    waterGorillaStonedTimer = 0;
+    setWaterGorillaMaterial(stoneGorillaMat);
+    tagCount++;
+    document.getElementById('score').textContent = tagCount;
+  }
+
+  // Stone countdown → respawn as water gorilla
+  if(waterGorillaStoned){
+    waterGorillaStonedTimer++;
+    if(waterGorillaStonedTimer >= STONE_DURATION){
+      waterGorillaStoned = false;
+      setWaterGorillaMaterial(waterGorillaMat);
+      const pos = getRandomSpawn();
+      waterGorilla.position.x = pos.x;
+      waterGorilla.position.z = pos.z;
+    }
+  }
+
+  // Water gorilla runs away from player (only when not stone)
+  if(!waterGorillaStoned){
+  waterGorillaTimer++;
+  if(waterGorillaTimer > 10){
+    waterGorillaTimer = 0;
+    const toPlayerX = player.position.x - waterGorilla.position.x;
+    const toPlayerZ = player.position.z - waterGorilla.position.z;
+    const len = Math.sqrt(toPlayerX*toPlayerX + toPlayerZ*toPlayerZ) || 1;
+    const runX = -toPlayerX/len * WATER_GORILLA_SPEED;
+    const runZ = -toPlayerZ/len * WATER_GORILLA_SPEED;
+    let newWX = waterGorilla.position.x + runX;
+    let newWZ = waterGorilla.position.z + runZ;
+    if(newWX > WORLD_LIMIT) newWX = WORLD_LIMIT;
+    if(newWX < -WORLD_LIMIT) newWX = -WORLD_LIMIT;
+    if(newWZ > WORLD_LIMIT) newWZ = WORLD_LIMIT;
+    if(newWZ < -WORLD_LIMIT) newWZ = -WORLD_LIMIT;
+    waterGorilla.position.x = newWX;
+    waterGorilla.position.z = newWZ;
+    waterGorilla.rotation.y = Math.atan2(runX, runZ);
+  }
+  }
+}
+
+// Animation loop
+function animate(){
+  update();
+  renderer.render(scene,camera);
+  requestAnimationFrame(animate);
+}
+
+animate();
+
+</script>
+</body>
+</html>
